@@ -16,7 +16,8 @@ Temp=rawdata$Temperature..K.
 Log=rawdata$Log
 srcage=rawdata$Source.age..hrs.
 reduced_columns=data.frame(date,srcage,Ifil,Vext,Itot,Icup,Iprime,Temp,Log)  #Puts the desired columns in a new data frame for viewing simplicity
-View(reduced_columns)
+#View(reduced_columns)
+
 
 #### SORT OUT "BAD" STARTS  ####
 #For example, chD had to be reconnected during its 2nd official day in TEM mode,causing another "Schedule TEM started" message to occur
@@ -27,7 +28,7 @@ scheduleTEMmodebeginning=reduced_columns[findbeginning,]
 beginningrow=as.numeric(rownames(scheduleTEMmodebeginning))
 max(beginningrow)           
 scheduleTEMmode = slice(reduced_columns, -(1:max(beginningrow)))
-View(scheduleTEMmode)
+#View(scheduleTEMmode)
 
 #Now the dataframe should not be interrupted by any more log messages saying "Schedule TEM mode started"
 
@@ -59,13 +60,17 @@ dframe = scheduleTEMmode %>%
   slice(adj_start[1]:adj_end[length(adj_end)]) %>%
   mutate(`10 minute pct change (%)` = ((lead(Iprime,15)/Iprime) - 1)*100) %>%
   mutate(`Day` = cumsum(ifelse(Log == "Entering Mode 2", 1, 0)))%>%
-  mutate( on.off = ifelse(Vext>4000 & Ifil>2.2 , TRUE, FALSE))
-  
+  mutate( on.off = ifelse(Vext>4000 & Ifil>2.2 , TRUE, FALSE))%>%
+  mutate( Mondays = ifelse( Day %% 5 == 0, TRUE, FALSE))
   #mutate(`Normalized time (hrs)`, ...)  want to add another column that tracks time during day of operation so that multiple days can be plotted with eachother
   #on/off column is brute forced with vext and Ifil. Need it to calculate daily avgs and stdevs. 
 
-dframe
 View(dframe)
+
+a = ifelse(dframe$Log == "Entering Mode 2", 1, 0)
+b = ifelse(dframe$Log == "Entering Mode 1", 1, 0)
+a+b
+ifelse(dframe$Log == "Entering Mode 2" | dframe$Log == "Entering Mode 1", 1, 0)
 
 
 
@@ -90,16 +95,21 @@ dailystable
 timetostable
 stdev
 avgIprime
-stablecurrentdata = data.frame( "Stable Iprime" = dailystable,
-                                "Avg Iprime" = avgIprime,
-                                "Standard Deviation (mA/sr)" = stdev,
-                                "Stable - avg" = dailystable - avgIprime,
-                                "Time to stable current (min)" = timetostable*60,
-                                "Day" = c(1:length(dailystable)))
-View(stablecurrentdata)
 
-match(1, ifelse(filter(dframe, Day == 6)$`10 minute pct change (%)` < 1, 1, 0))
-s
+stablecurrentdata = data.frame( stable.iprime = dailystable,
+                                avg.iprime = avgIprime,
+                                stdev.iprime = stdev,
+                                stable.avg.difference = dailystable - avgIprime,
+                                timetostable.minutes = timetostable*60,
+                                day.counter = c(1:length(dailystable)),
+                                Mondays = ifelse( c(1:length(dailystable)) %% 5 == 0, TRUE, FALSE))
+View(stablecurrentdata)
+write.csv(stablecurrentdata, "sn5000044-stabilitydata.csv")
+
+stablecurrentdata %>% ggplot()+
+  geom_point(aes(x=day.counter, y=stable.iprime))+
+  ylim(0.45, 0.5)+
+  theme_bw()
 
 
 
