@@ -1,5 +1,3 @@
-setwd("C:/dev/R") #changes the working directory to a local drive
-
 library(dplyr)
 library(ggplot2)
 library(ggthemes)
@@ -8,7 +6,7 @@ library(ggthemes)
 
 dataFile <- file.choose()
 rawdata <-read.csv(dataFile)  #rawdata=original data set
-date=rawdata$Date           #Sets each column to a specific variable
+date=rawdata$Date           #Sets each column to a specific variable. Ifil easier to access later than Filament..A. in my opinion
 Ifil=rawdata$Filament..A.
 Vext=rawdata$Extractor..V.
 Itot=rawdata$Total.current..nA.
@@ -20,14 +18,20 @@ srcage=rawdata$Source.age..hrs.
 reduced_columns=data.frame(date,srcage,Ifil,Vext,Itot,Icup,Iprime,Temp,Log)  #Puts the desired columns in a new data frame for viewing simplicity
 View(reduced_columns)
 
-#Now discard the data from before the experiment started with turning on standby mode, maybe not super necessary
+#### SORT OUT "BAD" STARTS  ####
+#For example, chD had to be reconnected during its 2nd official day in TEM mode,causing another "Schedule TEM started" message to occur
+#This code lets you choose the most recent "Schedule TEM started" log message to start from
+
 findbeginning=apply(reduced_columns,1,function(lR) {any(grepl(lR,pattern="Schedule TEM started"))})
-scheduleTEMmodebeginning=sreduced_columns[findbeginning,]
+scheduleTEMmodebeginning=reduced_columns[findbeginning,]
 beginningrow=as.numeric(rownames(scheduleTEMmodebeginning))
 max(beginningrow)           
 scheduleTEMmode = slice(reduced_columns, -(1:max(beginningrow)))
 View(scheduleTEMmode)
 
+#Now the dataframe should not be interrupted by any more log messages saying "Schedule TEM mode started"
+
+#### end ####
 
 # Search through to find the log entry that says the emitter is starting up
 started=apply(scheduleTEMmode,1,function(started) {any(grepl(started,pattern="Entering Mode 2"))})  #started is a boolean list, with TRUE for rows that have the log message we're searching for
@@ -47,104 +51,60 @@ rnend #print row indices where the log message says entering mode 2
 endedntimes #print the number of days that the emitter has been entered its "on" mode
 
 #need to drop the first move to mode 1 and the last move to mode 2... these will always be incomplete due to workday & when mode was started!
-adj_start = rnstart[-length(rnstart)]
-adj_end = rnend[-1]
-View(scheduleTEMmode)
-count(scheduleTEMmode, Log)
-
-
-#example of what I want to do to each day
-onedaytest = slice(scheduleTEMmode, adj_start[1]:adj_end[1])
-View(onedaytest)
-
-#percent change function between two Iprime values
-percentchange = function(Iprime1, Iprime2)
-  {
-  return ((Iprime2-Iprime1)/Iprime1)*100
-  }
-
-percentchanges = c()
-for (i in 1:length(onedaytest$Iprime)){
-  percentchanges[i] = percentchange(onedaytest$Iprime[i], onedaytest$Iprime[i+10])
-}
-
-onedaytest$percentchanges <- percentchanges
-View(onedaytest)
-
-onedaytest %>% ggplot()+
-  geom_point(aes(x=srcage, y=log(percentchanges)))+
-  ggsave("Log_percent_changes.png")
-
-
-
-
-
-
-
-
-
-Ip_list = pull(scheduleTEMmode, Iprime) #pull the Iprime data so we can chop it up into equal sized pieces of ON data
-lengths = c()
-for (i in 1:length(adj_start))
-  {
-  lengths[i] = length(Ip_list[adj_start[i]:adj_end[i]])
-  }
-lengths #each day will likely have a different number of data points during mode 2
-
-for (i in 1:length(adj_start))
-  {
+adj_start = rnstart[-length(rnstart)] #removes the most recent startup from the list of startup rownames
+adj_end = rnend[-1] #removes the first shutdown
+adj_start
+adj_end
+dframe = scheduleTEMmode %>%
+  slice(adj_start[1]:adj_end[length(adj_end)]) %>%
+  mutate(`10 minute pct change (%)` = ((lead(Iprime,15)/Iprime) - 1)*100) %>%
+  mutate(`Day` = cumsum(ifelse(Log == "Entering Mode 2", 1, 0)))%>%
+  mutate( on.off = ifelse(Vext>4000 & Ifil>2.2 , TRUE, FALSE))
   
-  }
+  #mutate(`Normalized time (hrs)`, ...)  want to add another column that tracks time during day of operation so that multiple days can be plotted with eachother
+  #on/off column is brute forced with vext and Ifil. Need it to calculate daily avgs and stdevs. 
+
+dframe
+View(dframe)
 
 
 
 
+#### Calculate the daily stable current ####
 
+# We chose the first instance where the current (net) changes by <1% in the next 15 minutes
+# Could improve this by requiring >1% net 15 minute change for say 5 minutes ? Or not
 
-
-
-
-
-
-
-
-
-
-
-
-
-listofIprimes = c()#Initialize empty dataframe 
-df = data.frame()
-for (i in 1:length(adj_start)){   #iterate over the number of starts
-    onedayIprime <- a[adj_start[i]:(adj_start[i]+535)]
-    df[, ncol(df)+1] <- onedayIprime
-    colnames(df)[ncol(df)] <- paste0("day", i)
+dailystable = c()
+timetostable = c()
+stdev = c()
+avgIprime = c()
+for (i in unique(dframe$Day))
+  {
+  timetostable[i] = filter(dframe, Day == i)$srcage[match(1, ifelse(filter(dframe, Day == i)$`10 minute pct change (%)` < 1, 1, 0))]-filter(dframe, Day == i)$srcage[1]
+  dailystable[i] = dframe$Iprime[match(1, ifelse(filter(dframe, Day == i)$`10 minute pct change (%)` < 1, 1, 0))]
+  stdev[i] = sd(filter(dframe, Day == i & on.off == TRUE & srcage > filter(dframe, Day == i)$srcage[match(1, ifelse(filter(dframe, Day == i)$`10 minute pct change (%)` < 1, 1, 0))])$Iprime)
+  avgIprime[i] = mean(filter(dframe, Day == i & on.off == TRUE & srcage > filter(dframe, Day == i)$srcage[match(1, ifelse(filter(dframe, Day == i)$`10 minute pct change (%)` < 1, 1, 0))])$Iprime)
 }
+dailystable
+timetostable
+stdev
+avgIprime
+stablecurrentdata = data.frame( "Stable Iprime" = dailystable,
+                                "Avg Iprime" = avgIprime,
+                                "Standard Deviation (mA/sr)" = stdev,
+                                "Stable - avg" = dailystable - avgIprime,
+                                "Time to stable current (min)" = timetostable*60,
+                                "Day" = c(1:length(dailystable)))
+View(stablecurrentdata)
+
+match(1, ifelse(filter(dframe, Day == 6)$`10 minute pct change (%)` < 1, 1, 0))
+s
+
+
+
+#### end ####
 
 
 
 
-
-
-
-
-
-
-#Quick inspection routine to see if the search method above missed any of the log messages.
-# This is to ensure we continue through to the end of our data set, instead of ending at a break line.
-# If the last row of rn is not equal to the number of rows in the lean dataset, then make a new dataframe with the two columns being 
-if (max(rn) != nrow(scheduleTEMmode)) {
-  rn= c(rn,nrow(scheduleTEMmode))
-}
-rn
-lrn
-# Finding the max length of the "ON" or Mode 2 case. (We'll need each chunk to have the same number of rows to write to a data frame.)
-k=1
-dif=c()
-for (i in 2:length(rnstart)) {
-  intdif = rnstart[i] - rnstart[k]
-  dif=c(dif,intdif)
-  maxdif=max(dif)
-  k=k+1
-}
-dif
