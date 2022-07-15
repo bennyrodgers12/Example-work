@@ -1,7 +1,7 @@
 library(dplyr)
 library(ggplot2)
 library(ggthemes)
-
+library(lubridate)
 
 
 dataFile <- file.choose()
@@ -26,6 +26,7 @@ reduced_columns=data.frame(date,srcage,Ifil,Vext,Itot,Icup,Iprime,Temp,Log)  #Pu
 findbeginning=apply(reduced_columns,1,function(lR) {any(grepl(lR,pattern="Schedule TEM started"))})
 scheduleTEMmodebeginning=reduced_columns[findbeginning,]
 beginningrow=as.numeric(rownames(scheduleTEMmodebeginning))
+
 max(beginningrow)           
 scheduleTEMmode = slice(reduced_columns, -(1:max(beginningrow)))
 #View(scheduleTEMmode)
@@ -58,19 +59,16 @@ adj_start
 adj_end
 dframe = scheduleTEMmode %>%
   slice(adj_start[1]:adj_end[length(adj_end)]) %>%
-  mutate(`10 minute pct change (%)` = ((lead(Iprime,15)/Iprime) - 1)*100) %>%
+  mutate(`15 minute pct change (%)` = ((lead(Iprime,15)/Iprime) - 1)*100) %>%
   mutate(`Day` = cumsum(ifelse(Log == "Entering Mode 2", 1, 0)))%>%
-  mutate( on.off = ifelse(Vext>4000 & Ifil>2.2 , TRUE, FALSE))%>%
-  mutate( Mondays = ifelse( Day %% 5 == 0, TRUE, FALSE))
+  mutate( on.off = ifelse(Vext>max(Vext, na.rm = TRUE)-500 & Vext < max(Vext, na.rm = TRUE)+500 & Ifil>2.2 , TRUE, FALSE))%>%
+  mutate(`datetime` = mdy_hms(date))%>%
+  mutate(`Weekday` = wday(datetime, label = TRUE))
   #mutate(`Normalized time (hrs)`, ...)  want to add another column that tracks time during day of operation so that multiple days can be plotted with eachother
   #on/off column is brute forced with vext and Ifil. Need it to calculate daily avgs and stdevs. 
 
 View(dframe)
-
-a = ifelse(dframe$Log == "Entering Mode 2", 1, 0)
-b = ifelse(dframe$Log == "Entering Mode 1", 1, 0)
-a+b
-ifelse(dframe$Log == "Entering Mode 2" | dframe$Log == "Entering Mode 1", 1, 0)
+#NOTE: weekday is Sunday =1, Monday =2, etc
 
 
 
@@ -84,37 +82,44 @@ dailystable = c()
 timetostable = c()
 stdev = c()
 avgIprime = c()
+weekday = c()
 for (i in unique(dframe$Day))
   {
-  timetostable[i] = filter(dframe, Day == i)$srcage[match(1, ifelse(filter(dframe, Day == i)$`10 minute pct change (%)` < 1, 1, 0))]-filter(dframe, Day == i)$srcage[1]
-  dailystable[i] = dframe$Iprime[match(1, ifelse(filter(dframe, Day == i)$`10 minute pct change (%)` < 1, 1, 0))]
-  stdev[i] = sd(filter(dframe, Day == i & on.off == TRUE & srcage > filter(dframe, Day == i)$srcage[match(1, ifelse(filter(dframe, Day == i)$`10 minute pct change (%)` < 1, 1, 0))])$Iprime)
-  avgIprime[i] = mean(filter(dframe, Day == i & on.off == TRUE & srcage > filter(dframe, Day == i)$srcage[match(1, ifelse(filter(dframe, Day == i)$`10 minute pct change (%)` < 1, 1, 0))])$Iprime)
+  timetostable[i] = filter(dframe, Day == i)$srcage[match(1, ifelse(filter(dframe, Day == i)$`15 minute pct change (%)` < 1, 1, 0))]-
+    filter(dframe, Day == i)$srcage[1]
+  dailystable[i] = filter(dframe, Day==i)$Iprime[match(1, ifelse(filter(dframe, Day ==i)$`15 minute pct change (%)`<1, 1, 0))]
+  stdev[i] = sd(filter(dframe, Day == i & on.off == TRUE & srcage > filter(dframe, Day == i)$srcage[match(1, ifelse(filter(dframe, Day == i)$`15 minute pct change (%)` < 1, 1, 0))])$Iprime)
+  avgIprime[i] = mean(filter(dframe, Day == i & on.off == TRUE & srcage > filter(dframe, Day == i)$srcage[match(1, ifelse(filter(dframe, Day == i)$`15 minute pct change (%)` < 1, 1, 0))])$Iprime)
+  weekday[i] = filter(dframe, Day == i)$Weekday[1]
 }
 dailystable
 timetostable
 stdev
 avgIprime
+weekday
+
+
+
+
+
+
+
+tdata <- select(dframe, Day, Temp) %>% na.omit() #give me just the temperature recordings
+tdata1 = tdata[order(nrow(tdata):1),] #rverse the order of the dataset in order to get most recent temp measurement on that day (some were rerecorded)
+temps = distinct(tdata1, Day, .keep_all = TRUE)[order(nrow(distinct(tdata1, Day, .keep_all = TRUE)):1),] #use distinct by "day", then flip the rows again to be chronological
 
 stablecurrentdata = data.frame( stable.iprime = dailystable,
                                 avg.iprime = avgIprime,
                                 stdev.iprime = stdev,
                                 stable.avg.difference = dailystable - avgIprime,
                                 timetostable.minutes = timetostable*60,
-                                day.counter = c(1:length(dailystable)),
-                                Mondays = ifelse( c(1:length(dailystable)) %% 5 == 0, TRUE, FALSE))
-View(stablecurrentdata)
-write.csv(stablecurrentdata, "sn5000044-stabilitydata.csv")
+                                Day = c(1:length(dailystable)),
+                                dayofweek = weekday)
+#View(stablecurrentdata)
 
-stablecurrentdata %>% ggplot()+
-  geom_point(aes(x=day.counter, y=stable.iprime))+
-  ylim(0.45, 0.5)+
-  theme_bw()
-
-
-
+stablecurrentdatatemp = merge(stablecurrentdata, temps, by = "Day", all.x = TRUE)
+View(stablecurrentdatatemp)
+write.csv(stablecurrentdatatemp,"sn500005-stabilitydata.csv")
 #### end ####
-
-
 
 
